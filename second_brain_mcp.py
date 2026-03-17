@@ -5,6 +5,7 @@ Second Brain MCP Server
 Senseモデルに基づき、知識の検索・最近の知見取得・気づきの還元を提供する。
 """
 
+import argparse
 import os
 import re
 import subprocess
@@ -16,10 +17,7 @@ from mcp.server.fastmcp import FastMCP
 
 # --- Configuration ---
 
-VAULT_PATH = os.environ.get(
-    "SECOND_BRAIN_PATH",
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-)
+VAULT_PATH: str = ""
 KNOWLEDGE_DIRS = ["30_Areas", "40_Resources", "50_Tech_Notes"]
 GIT_SYNC = os.environ.get("SECOND_BRAIN_GIT_SYNC", "false").lower() == "true"
 
@@ -304,5 +302,65 @@ def capture_insight(
     return f"Note created: {filepath.relative_to(VAULT_PATH)}"
 
 
-if __name__ == "__main__":
+def _resolve_vault_path(cli_vault: str | None = None) -> str:
+    """Resolve vault path from CLI arg, env var, or auto-detection."""
+    # 1. CLI argument (highest priority)
+    if cli_vault:
+        path = Path(cli_vault).expanduser().resolve()
+        if _is_vault(path):
+            return str(path)
+        raise SystemExit(f"Not a valid Second Brain vault: {path}")
+
+    # 2. Environment variable
+    env_path = os.environ.get("SECOND_BRAIN_PATH")
+    if env_path:
+        path = Path(env_path).expanduser().resolve()
+        if _is_vault(path):
+            return str(path)
+        raise SystemExit(f"SECOND_BRAIN_PATH is not a valid vault: {path}")
+
+    # 3. Auto-detect: search common locations
+    candidates = [
+        Path.home() / "Documents" / "second-brain" / "second-brain",
+        Path.home() / "second-brain",
+        Path.home() / "Documents" / "second-brain",
+    ]
+    for candidate in candidates:
+        if _is_vault(candidate):
+            return str(candidate)
+
+    raise SystemExit(
+        "Could not find Second Brain vault. "
+        "Pass --vault <path> or set SECOND_BRAIN_PATH."
+    )
+
+
+def _is_vault(path: Path) -> bool:
+    """Check if a directory looks like a Second Brain vault."""
+    if not path.is_dir():
+        return False
+    markers = ["00_Inbox", "30_Areas", "50_Tech_Notes"]
+    return any((path / m).is_dir() for m in markers)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Second Brain MCP Server")
+    parser.add_argument("--vault", help="Path to Second Brain vault")
+    parser.add_argument(
+        "--git-sync",
+        action="store_true",
+        default=None,
+        help="Enable git sync with remote",
+    )
+    args = parser.parse_args()
+
+    global VAULT_PATH, GIT_SYNC
+    VAULT_PATH = _resolve_vault_path(args.vault)
+    if args.git_sync is not None:
+        GIT_SYNC = args.git_sync
+
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

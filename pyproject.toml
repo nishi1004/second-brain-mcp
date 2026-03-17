@@ -8,6 +8,13 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.scripts]
+second-brain-mcp = "second_brain_mcp:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+only-include = ["second_brain_mcp.py"]
+
 [build-system]
-requires = ["setuptools>=75.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["hatchling"]
+build-backend = "hatchling.build"

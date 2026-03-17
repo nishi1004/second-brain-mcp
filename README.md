@@ -4,37 +4,33 @@
 
 ## セットアップ
 
-### 1. 依存インストール（WSL内）
+### Claude Code に MCP サーバーを登録
 
-```bash
-cd 90_System/mcp-server
-pip install -e .
-# or
-pip install mcp[cli] pyyaml
-```
-
-### 2. Claude Code に MCP サーバーを登録
-
-プロジェクトの `.mcp.json` に追加:
+プロジェクトの `.claude/settings.json` または `~/.claude/settings.json` に追加:
 
 ```json
 {
   "mcpServers": {
     "second-brain": {
-      "command": "wsl.exe",
-      "args": ["bash", "-c", "cd /mnt/c/Users/YoNishioka/Documents/second-brain/second-brain/90_System/mcp-server && python3 server.py"],
-      "env": {
-        "SECOND_BRAIN_PATH": "/mnt/c/Users/YoNishioka/Documents/second-brain/second-brain",
-        "SECOND_BRAIN_GIT_SYNC": "false"
-      }
+      "command": "uvx",
+      "args": ["second-brain-mcp", "--vault", "~/Documents/second-brain/second-brain"]
     }
   }
 }
 ```
 
-別のPCで使う場合は `SECOND_BRAIN_PATH` をそのPCのcloneパスに変更する。
+別のPCではvaultパスだけ変更すればOK。
 
-リモートリポジトリとの同期を有効にするには `SECOND_BRAIN_GIT_SYNC=true` を設定。
+### Vault パスの解決順序
+
+1. `--vault` CLI引数（最優先）
+2. `SECOND_BRAIN_PATH` 環境変数
+3. 自動探索（`~/Documents/second-brain/second-brain`, `~/second-brain` 等）
+
+### オプション
+
+- `--git-sync`: リモートリポジトリとの自動同期を有効化
+- 環境変数 `SECOND_BRAIN_GIT_SYNC=true` でも同等
 
 ## 提供ツール
 
