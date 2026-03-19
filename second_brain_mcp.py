@@ -6,14 +6,18 @@ Senseモデルに基づき、知識の検索・最近の知見取得・気づき
 """
 
 import argparse
+import logging
 import os
 import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import yaml
 from mcp.server.fastmcp import FastMCP
+
+logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 
@@ -115,6 +119,90 @@ def _scan_notes() -> list[dict]:
     return notes
 
 
+# --- Embedding / Semantic Search ---
+
+_embedding_model = None
+_embeddings_cache: dict[str, tuple[float, np.ndarray]] = {}  # path -> (mtime, vector)
+
+EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
+
+
+def _get_model():
+    """Lazy-load the embedding model on first use."""
+    global _embedding_model
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
+
+        logger.info("Loading embedding model: %s", EMBEDDING_MODEL_NAME)
+        _embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        logger.info("Embedding model loaded.")
+    return _embedding_model
+
+
+def _embedding_text(note: dict) -> str:
+    """Build text to embed from note metadata."""
+    parts = []
+    if note.get("title"):
+        parts.append(note["title"])
+    for p in note.get("abstract_principles", []):
+        parts.append(p)
+    for d in note.get("applicable_domains", []):
+        parts.append(d.replace("-", " "))
+    return " ".join(parts)
+
+
+def _build_embeddings(notes: list[dict]) -> None:
+    """Build/update embedding cache (only recompute changed files)."""
+    model = _get_model()
+    to_encode: list[tuple[str, str]] = []  # (path, text)
+
+    for note in notes:
+        path = note["_path"]
+        filepath = Path(VAULT_PATH) / path
+        try:
+            mtime = filepath.stat().st_mtime
+        except OSError:
+            continue
+
+        if path in _embeddings_cache and _embeddings_cache[path][0] == mtime:
+            continue  # cache hit
+
+        to_encode.append((path, "passage: " + _embedding_text(note)))
+        # store mtime now, vector will be filled after batch encode
+        _embeddings_cache[path] = (mtime, np.array([]))
+
+    if to_encode:
+        paths, texts = zip(*to_encode)
+        vectors = model.encode(list(texts), normalize_embeddings=True)
+        for path, vec in zip(paths, vectors):
+            mtime = _embeddings_cache[path][0]
+            _embeddings_cache[path] = (mtime, vec)
+
+
+def _semantic_rank(
+    context: str, notes: list[dict], top_k: int = 10
+) -> list[dict]:
+    """Rank notes by cosine similarity to context, return top_k."""
+    _build_embeddings(notes)
+    model = _get_model()
+
+    query_vec = model.encode("query: " + context, normalize_embeddings=True)
+
+    scored = []
+    for note in notes:
+        path = note["_path"]
+        if path not in _embeddings_cache:
+            continue
+        _, note_vec = _embeddings_cache[path]
+        if note_vec.size == 0:
+            continue
+        score = float(query_vec @ note_vec)
+        scored.append((score, note))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [note for _, note in scored[:top_k]]
+
+
 def _filter_by_domains(notes: list[dict], domains: list[str]) -> list[dict]:
     """Filter notes by applicable_domains overlap."""
     if not domains:
@@ -159,8 +247,11 @@ def query_knowledge(
     context: str,
     domains: list[str] | None = None,
     depth: str = "index",
+    top_k: int = 10,
 ) -> str:
     """Search Second Brain for knowledge related to the given context.
+
+    Uses semantic similarity to rank notes by relevance to context.
 
     Args:
         context: Current context or challenge in natural language.
@@ -168,21 +259,30 @@ def query_knowledge(
                  (e.g. game-design, software-architecture, skill-acquisition).
         depth: Detail level - "index" (frontmatter only),
                "summary" (+ core thesis & principles), or "full" (entire note).
+        top_k: Maximum number of results to return (default 10, 0 for all).
     """
     notes = _scan_notes()
     filtered = _filter_by_domains(notes, domains or [])
 
-    if depth == "full":
-        results = [_format_full(n) for n in filtered]
-    elif depth == "summary":
-        results = [_format_summary(n) for n in filtered]
+    # Semantic ranking by context
+    if context.strip() and top_k > 0:
+        ranked = _semantic_rank(context, filtered, top_k=top_k)
+    elif context.strip():
+        ranked = _semantic_rank(context, filtered, top_k=len(filtered))
     else:
-        results = [_format_index(n) for n in filtered]
+        ranked = filtered
+
+    if depth == "full":
+        results = [_format_full(n) for n in ranked]
+    elif depth == "summary":
+        results = [_format_summary(n) for n in ranked]
+    else:
+        results = [_format_index(n) for n in ranked]
 
     if not results:
         return "No matching notes found in Second Brain."
 
-    output_parts = [f"Found {len(results)} notes matching query:\n"]
+    output_parts = [f"Found {len(results)} notes (top {len(results)} by relevance):\n"]
     for r in results:
         output_parts.append(f"## {r['title']}")
         output_parts.append(f"Path: {r['path']}")
